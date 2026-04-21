@@ -1,0 +1,12 @@
+.vs/
+*.user
+Debug/
+Release/
+x64/
+Intermediate/
+*.exe
+*.pdb
+*.obj
+*.ilk
+*.lib
+*.exp
