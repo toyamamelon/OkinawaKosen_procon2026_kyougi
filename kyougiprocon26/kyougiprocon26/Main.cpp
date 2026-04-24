@@ -246,6 +246,84 @@ public:
 
 		return Polygon{ pts };
 	}
+
+	int hexDistance(int a, int b) const
+	{
+		HexCoord A = coordOf(a);
+		HexCoord B = coordOf(b);
+
+		int dx = A.q - B.q;
+		int dz = A.r - B.r;
+		int dy = -dx - dz;
+
+		return (Abs(dx) + Abs(dy) + Abs(dz)) / 2;
+	}
+
+	Array<int> findPath(int start, int goal) const
+	{
+		Array<int> open;
+		open << start;
+
+		HashTable<int,int> came;
+		HashTable<int,int> gScore;
+		HashTable<int,int> fScore;
+
+		gScore[start] = 0;
+		fScore[start] = hexDistance(start, goal);
+
+		while (!open.isEmpty())
+		{
+			int current = open.front();
+			int best = fScore[current];
+
+			for (int n : open)
+			{
+				if (fScore[n] < best)
+				{
+					best = fScore[n];
+					current = n;
+				}
+			}
+
+			if (current == goal)
+			{
+				Array<int> path;
+				int cur = goal;
+
+				while (came.contains(cur))
+				{
+					path << cur;
+					cur = came[cur];
+				}
+
+				path << start;
+				path.reverse();
+				return path;
+			}
+
+			open.remove(current);
+
+			for (int dir = 0; dir < 6; ++dir)
+			{
+				int next = neighbor(current, dir);
+				if (next == -1) continue;
+
+				int tentative = gScore[current] + 1;
+
+				if (!gScore.contains(next) || tentative < gScore[next])
+				{
+					came[next] = current;
+					gScore[next] = tentative;
+					fScore[next] = tentative + hexDistance(next, goal);
+
+					if (!open.includes(next))
+						open << next;
+				}
+			}
+		}
+
+		return {};
+	}
 };
 
 // =========================
@@ -338,7 +416,7 @@ void Main()
 	// --- ここからマップ作成 ---
 
 	// 1. 山（Mountain）を配置：緑色（Forestgreen）で表示される
-	setTerrain(1, 2, Terrain::Mountain, false); // 通行不可
+	setTerrain(1, 2, Terrain::Mountain, false);
 	setTerrain(1, 3, Terrain::Mountain, false);
 	setTerrain(0, 3, Terrain::Mountain, false);
 
@@ -352,6 +430,7 @@ void Main()
 	setTerrain(1, 1, Terrain::Road, true);
 	setTerrain(0, 1, Terrain::Road, true);
 
+	setTerrain(0, 3, Terrain::Plain, true);
 
 	// エージェント配置
 	sim.agents << Agent{ 0, sim.map.indexRC(2, 1) };
@@ -385,6 +464,18 @@ void Main()
 		if (Key4.down()) sim.moveAgentDir(selectedAgent, 3);
 		if (Key5.down()) sim.moveAgentDir(selectedAgent, 4);
 		if (Key6.down()) sim.moveAgentDir(selectedAgent, 5);
+		if (KeySpace.down())
+		{
+			int start = sim.agents[selectedAgent].cellId;
+			int goal = sim.spots[0].cellId;
+
+			auto path = sim.map.findPath(start, goal);
+
+			if (path.size() >= 2)
+			{
+				sim.moveAgent(selectedAgent, path[1]);
+			}
+		}
 
 		// 盤面描画
 		for (int id = 0; id < sim.map.width * sim.map.height; ++id)
