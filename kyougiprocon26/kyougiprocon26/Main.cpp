@@ -1,6 +1,7 @@
 ﻿# include <Siv3D.hpp>
 # include <cmath>
 # include <utility>
+#include <climits>
 
 using namespace s3d;
 
@@ -109,8 +110,26 @@ struct Cell
 {
 	Terrain terrain = Terrain::Plain;
 	bool walkable = true;
+	int moveCost = 1;
 };
 
+
+int terrainMoveCost(Terrain t)
+{
+	switch (t)
+	{
+	case Terrain::Plain:    return 2;
+	case Terrain::Mountain:  return 3;
+	case Terrain::Road:      return 1;
+	case Terrain::Lake:      return INT_MAX / 4;
+	}
+	return INT_MAX / 4;
+}
+
+bool terrainWalkable(Terrain t)
+{
+	return (t != Terrain::Lake);
+}
 // =========================
 // Agent
 // =========================
@@ -201,7 +220,7 @@ public:
 		{
 			return false;
 		}
-		return cells[id].walkable && (cells[id].terrain != Terrain::Lake);
+		return cells[id].walkable;
 	}
 
 	int neighbor(int cellId, int dir) const
@@ -308,7 +327,7 @@ public:
 				int next = neighbor(current, dir);
 				if (next == -1) continue;
 
-				int tentative = gScore[current] + 1;
+				int tentative = gScore[current] + cells[next].moveCost;
 
 				if (!gScore.contains(next) || tentative < gScore[next])
 				{
@@ -403,35 +422,35 @@ void Main()
 
 	HexSimulator sim;
 	sim.map.init(5, 5);
-
-	// 地形を一括設定するための便利関数（ラムダ式）を作っておくと楽です
-	auto setTerrain = [&](int r, int c, Terrain t, bool walk) {
-		if (sim.map.inBoundsRC(r, c)) {
-			int id = sim.map.indexRC(r, c);
-			sim.map.cells[id].terrain = t;
-			sim.map.cells[id].walkable = walk;
-		}
-		};
-
 	// --- ここからマップ作成 ---
 
-	// 1. 山（Mountain）を配置：緑色（Forestgreen）で表示される
-	setTerrain(1, 2, Terrain::Mountain, false);
-	setTerrain(1, 3, Terrain::Mountain, false);
-	setTerrain(0, 3, Terrain::Mountain, false);
+	auto setTerrain = [&](int r, int c, Terrain t)
+	{
+		if (!sim.map.inBoundsRC(r, c))
+		{
+			return;
+		}
 
-	// 2. 湖（Lake）を配置：青色（Deepskyblue）で表示される
-	setTerrain(2, 2, Terrain::Lake, false); // 水没（通行不可）
-	setTerrain(3, 2, Terrain::Lake, false);
+		int id = sim.map.indexRC(r, c);
+		auto& cell = sim.map.cells[id];
 
-	// 3. 道（Road）を配置：ベージュ（Sandybrown）で表示される
-	setTerrain(2, 0, Terrain::Road, true);
-	setTerrain(2, 1, Terrain::Road, true);
-	setTerrain(1, 1, Terrain::Road, true);
-	setTerrain(0, 1, Terrain::Road, true);
+		cell.terrain = t;
+		cell.walkable = terrainWalkable(t);
+		cell.moveCost = terrainMoveCost(t);
+	};
 
-	setTerrain(0, 3, Terrain::Plain, true);
+	setTerrain(1, 2, Terrain::Mountain);
+	setTerrain(1, 3, Terrain::Mountain);
 
+	setTerrain(2, 2, Terrain::Lake);
+	setTerrain(3, 2, Terrain::Lake);
+
+	setTerrain(2, 0, Terrain::Road);
+	setTerrain(2, 1, Terrain::Road);
+	setTerrain(1, 1, Terrain::Road);
+	setTerrain(0, 1, Terrain::Road);
+
+	setTerrain(0, 3, Terrain::Plain);
 	// エージェント配置
 	sim.agents << Agent{ 0, sim.map.indexRC(2, 1) };
 	sim.agents << Agent{ 1, sim.map.indexRC(4, 4) };
@@ -447,10 +466,11 @@ void Main()
 	const Font uiFont{ 20 };
 
 	int selectedAgent = 0;
+	int targetSpot = 0;
 
 	while (System::Update())
 	{
-
+	
 		// エージェント切り替え
 		if (KeyTab.down())
 		{
@@ -467,13 +487,18 @@ void Main()
 		if (KeySpace.down())
 		{
 			int start = sim.agents[selectedAgent].cellId;
-			int goal = sim.spots[0].cellId;
+			int goal = sim.spots[targetSpot].cellId;
 
 			auto path = sim.map.findPath(start, goal);
 
 			if (path.size() >= 2)
 			{
 				sim.moveAgent(selectedAgent, path[1]);
+			}
+			else if (path.size() == 1)
+			{
+				// 目標スポットに到着したら次へ
+				targetSpot = (targetSpot + 1) % sim.spots.size();
 			}
 		}
 
