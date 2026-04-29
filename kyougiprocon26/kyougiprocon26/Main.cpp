@@ -471,9 +471,9 @@ void Main()
 
 	while (System::Update())
 	{
-		int pathStart = sim.agents[selectedAgent].cellId;
-		int pathGoal = sim.spots[targetSpot].cellId;
-		currentPath = sim.map.findPath(pathStart, pathGoal);
+		int start = sim.agents[selectedAgent].cellId;
+		int goal = sim.spots[targetSpot].cellId;
+		currentPath = sim.map.findPath(start, goal);
 
 		// エージェント切り替え
 		if (KeyTab.down())
@@ -490,16 +490,12 @@ void Main()
 		if (Key6.down()) sim.moveAgentDir(selectedAgent, 5);
 		if (KeySpace.down())
 		{
-			int start = sim.agents[selectedAgent].cellId;
-			int goal = sim.spots[targetSpot].cellId;
 
-			auto path = sim.map.findPath(start, goal);
-
-			if (path.size() >= 2)
+			if (currentPath.size() >= 2)
 			{
-				sim.moveAgent(selectedAgent, path[1]);
+				sim.moveAgent(selectedAgent, currentPath[1]);
 			}
-			else if (path.size() == 1)
+			else if (currentPath.size() == 1)
 			{
 				// 目標スポットに到着したら次へ
 				targetSpot = (targetSpot + 1) % sim.spots.size();
