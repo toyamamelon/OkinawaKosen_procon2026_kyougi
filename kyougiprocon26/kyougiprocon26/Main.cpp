@@ -110,7 +110,7 @@ struct Cell
 {
 	Terrain terrain = Terrain::Plain;
 	bool walkable = true;
-	int moveCost = 1;
+	int moveCost = 2;
 };
 
 
@@ -283,9 +283,9 @@ public:
 		Array<int> open;
 		open << start;
 
-		HashTable<int,int> came;
-		HashTable<int,int> gScore;
-		HashTable<int,int> fScore;
+		HashTable<int, int> came;
+		HashTable<int, int> gScore;
+		HashTable<int, int> fScore;
 
 		gScore[start] = 0;
 		fScore[start] = hexDistance(start, goal);
@@ -425,19 +425,19 @@ void Main()
 	// --- ここからマップ作成 ---
 
 	auto setTerrain = [&](int r, int c, Terrain t)
-	{
-		if (!sim.map.inBoundsRC(r, c))
 		{
-			return;
-		}
+			if (!sim.map.inBoundsRC(r, c))
+			{
+				return;
+			}
 
-		int id = sim.map.indexRC(r, c);
-		auto& cell = sim.map.cells[id];
+			int id = sim.map.indexRC(r, c);
+			auto& cell = sim.map.cells[id];
 
-		cell.terrain = t;
-		cell.walkable = terrainWalkable(t);
-		cell.moveCost = terrainMoveCost(t);
-	};
+			cell.terrain = t;
+			cell.walkable = terrainWalkable(t);
+			cell.moveCost = terrainMoveCost(t);
+		};
 
 	setTerrain(1, 2, Terrain::Mountain);
 	setTerrain(1, 3, Terrain::Mountain);
@@ -467,10 +467,14 @@ void Main()
 
 	int selectedAgent = 0;
 	int targetSpot = 0;
+	Array<int> currentPath;
 
 	while (System::Update())
 	{
-	
+		int pathStart = sim.agents[selectedAgent].cellId;
+		int pathGoal = sim.spots[targetSpot].cellId;
+		currentPath = sim.map.findPath(pathStart, pathGoal);
+
 		// エージェント切り替え
 		if (KeyTab.down())
 		{
@@ -515,11 +519,15 @@ void Main()
 			if (sim.map.cells[id].terrain == Terrain::Road)     fill = ColorF{ 0.9, 0.8, 0.35 };
 
 			hex.draw(fill);
-			hex.drawFrame(1, Palette::Black);
 
+			if (currentPath.includes(id))
+			{
+				hex.draw(ColorF{ 1.0, 0.2, 0.2, 0.35 }); // 薄い赤
+			}
+
+			hex.drawFrame(1, Palette::Black);
 			font(id).drawAt(12, c, Palette::Black);
 		}
-
 		// エージェント描画
 		for (const auto& a : sim.agents)
 		{
