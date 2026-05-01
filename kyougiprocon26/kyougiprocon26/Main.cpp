@@ -133,10 +133,21 @@ bool terrainWalkable(Terrain t)
 // =========================
 // Agent
 // =========================
+enum class AgentType : uint8
+{
+	Patrol,   // 巡回車
+	Supply    // 補給車
+};
+
 struct Agent
 {
 	int id = -1;
 	int cellId = -1;
+
+	AgentType type = AgentType::Patrol;
+
+	int fuel = 0;       // 現在燃料
+	int fuelMax = 10;   // 最大燃料
 };
 
 struct Spot
@@ -364,10 +375,9 @@ public:
 
 		Agent& a = agents[agentId];
 
-		// wait
 		if (a.cellId == toCell)
 		{
-			return true;
+			return true; // 待機
 		}
 
 		if (!map.isValidCellId(toCell) || !map.isWalkable(toCell))
@@ -375,28 +385,43 @@ public:
 			return false;
 		}
 
+		// 隣接チェック
 		auto rc = map.rcFromIndex(a.cellId);
-		int row = rc.first;
-		int col = rc.second;
-		HexCoord cur = map.oddrToAxial(row, col);
+		HexCoord cur = map.oddrToAxial(rc.first, rc.second);
 
 		auto rc2 = map.rcFromIndex(toCell);
-		int row2 = rc2.first;
-		int col2 = rc2.second;
-		HexCoord nxt = map.oddrToAxial(row2, col2);
+		HexCoord nxt = map.oddrToAxial(rc2.first, rc2.second);
 
+		bool adjacent = false;
 		for (const auto& d : HEX_DIRS)
 		{
 			if (cur.q + d.q == nxt.q && cur.r + d.r == nxt.r)
 			{
-				a.cellId = toCell;
-				return true;
+				adjacent = true;
+				break;
 			}
 		}
 
-		return false;
-	}
+		if (!adjacent)
+		{
+			return false;
+		}
 
+		// ここで燃料消費
+		const int cost = map.cells[toCell].moveCost;
+
+		if (a.type == AgentType::Patrol)
+		{
+			if (a.fuel < cost)
+			{
+				return false;
+			}
+			a.fuel -= cost;
+		}
+
+		a.cellId = toCell;
+		return true;
+	}
 	bool moveAgentDir(int agentId, int dir)
 	{
 		if (agentId < 0 || agentId >= static_cast<int>(agents.size()))
@@ -411,8 +436,67 @@ public:
 		}
 		return moveAgent(agentId, to);
 	}
+	void refillFuelIfNeeded()
+	{
+		for (auto& patrol : agents)
+		{
+			if (patrol.type != AgentType::Patrol)
+			{
+				continue;
+			}
+
+			for (const auto& supply : agents)
+			{
+				if (supply.type == AgentType::Supply && supply.cellId == patrol.cellId)
+				{
+					patrol.fuel = patrol.fuelMax;
+					break;
+				}
+			}
+		}
+	}
 };
 
+
+void drawAllAgentInfoUI(const Font& font, const HexSimulator& sim)
+{
+	const double x = 20;
+	const double y = Scene::Height() - 160;
+
+	RectF panel{ x - 6, y - 10, 260, 30.0 * sim.agents.size() + 20 };
+	panel.draw(ColorF{ 0.1, 0.1, 0.12, 0.75 });
+	panel.drawFrame(1, Palette::White);
+
+	font(U"Agents").draw(x, y - 2, Palette::White);
+
+	for (size_t i = 0; i < sim.agents.size(); ++i)
+	{
+		const Agent& a = sim.agents[i];
+		const String typeText = (a.type == AgentType::Patrol) ? U"巡回車" : U"補給車";
+
+		const double yy = y + 26.0 + 28.0 * i;
+
+		font(U"#{}  {}  Fuel {}/{}  Cell {}"_fmt(
+			i, typeText, a.fuel, a.fuelMax, a.cellId
+		)).draw(x, yy, Palette::White);
+	}
+}
+
+ColorF agentColor(const Agent& a, int selectedAgentIndex, int index)
+{
+	if (a.type == AgentType::Patrol)
+	{
+		return (index == selectedAgentIndex)
+			? ColorF{ 0.95, 0.20, 0.20 }   // 赤
+		: ColorF{ 0.55, 0.00, 0.00 };  // 濃い赤
+	} 
+	else
+	{
+		return (index == selectedAgentIndex)
+			? ColorF{0.20, 0.55, 0.95 }   // 青
+		: ColorF{ 0.00, 0.20, 0.55 };  // 濃い青
+	} 
+}
 // =========================
 // Main
 // =========================
@@ -452,8 +536,8 @@ void Main()
 
 	setTerrain(0, 3, Terrain::Plain);
 	// エージェント配置
-	sim.agents << Agent{ 0, sim.map.indexRC(2, 1) };
-	sim.agents << Agent{ 1, sim.map.indexRC(4, 4) };
+	sim.agents << Agent{ 0, sim.map.indexRC(2, 1), AgentType::Patrol, 10, 10 };
+	sim.agents << Agent{ 1, sim.map.indexRC(4, 4), AgentType::Supply, 0, 0 };
 
 	//スポット配置
 	sim.spots << Spot{ 0, sim.map.indexRC(0, 3), 0, 1 };
@@ -474,6 +558,7 @@ void Main()
 		int start = sim.agents[selectedAgent].cellId;
 		int goal = sim.spots[targetSpot].cellId;
 		currentPath = sim.map.findPath(start, goal);
+		sim.refillFuelIfNeeded();
 
 		// エージェント切り替え
 		if (KeyTab.down())
@@ -525,21 +610,12 @@ void Main()
 			font(id).drawAt(12, c, Palette::Black);
 		}
 		// エージェント描画
-		for (const auto& a : sim.agents)
+		for (int i = 0; i < static_cast<int>(sim.agents.size()); ++i)
 		{
+			const auto& a = sim.agents[i];
 			Vec2 p = sim.map.cellCenter(a.cellId, hexSize, origin);
 
-			ColorF col;
-
-			if (a.id == selectedAgent)
-			{
-				col = ColorF{ 0.95, 0.35, 0.25 }; // 選択中は赤
-			}
-			else
-			{
-				col = ColorF{ 0.15, 0.55, 0.75 }; // 通常は青
-			}
-
+			ColorF col = agentColor(a, selectedAgent, i);
 			drawCarIcon(p, col);
 		}
 
@@ -588,5 +664,6 @@ void Main()
 
 		drawMoveGuide(uiFont);
 		drawStatusUI(font, selectedAgent);
+		drawAllAgentInfoUI(font, sim);
 	}
 }
