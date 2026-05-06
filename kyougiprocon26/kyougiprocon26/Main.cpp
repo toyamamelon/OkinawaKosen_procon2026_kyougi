@@ -338,7 +338,7 @@ public:
 				int next = neighbor(current, dir);
 				if (next == -1) continue;
 
-				int tentative = gScore[current] + cells[next].moveCost;
+				int tentative = gScore[current] + cells[current].moveCost;
 
 				if (!gScore.contains(next) || tentative < gScore[next])
 				{
@@ -408,7 +408,7 @@ public:
 		}
 
 		// ここで燃料消費
-		const int cost = map.cells[toCell].moveCost;
+		const int cost = map.cells[a.cellId].moveCost;
 
 		if (a.type == AgentType::Patrol)
 		{
@@ -457,13 +457,17 @@ public:
 	}
 };
 
-
 void drawAllAgentInfoUI(const Font& font, const HexSimulator& sim)
 {
-	const double x = 20;
-	const double y = Scene::Height() - 160;
+	const double x = 20.0;
+	const double lineH = 24.0;
+	const double headerH = 28.0;
+	const double panelH = headerH + lineH * sim.agents.size() + 16.0;
 
-	RectF panel{ x - 6, y - 10, 260, 30.0 * sim.agents.size() + 20 };
+	// 画面内に収まるように、下端から持ち上げる
+	const double y = Max(20.0, Scene::Height() - panelH - 20.0);
+
+	RectF panel{ x - 6, y - 10, 280, panelH };
 	panel.draw(ColorF{ 0.1, 0.1, 0.12, 0.75 });
 	panel.drawFrame(1, Palette::White);
 
@@ -474,14 +478,13 @@ void drawAllAgentInfoUI(const Font& font, const HexSimulator& sim)
 		const Agent& a = sim.agents[i];
 		const String typeText = (a.type == AgentType::Patrol) ? U"巡回車" : U"補給車";
 
-		const double yy = y + 26.0 + 28.0 * i;
+		const double yy = y + headerH + lineH * i;
 
 		font(U"#{}  {}  Fuel {}/{}  Cell {}"_fmt(
 			i, typeText, a.fuel, a.fuelMax, a.cellId
 		)).draw(x, yy, Palette::White);
 	}
 }
-
 ColorF agentColor(const Agent& a, int selectedAgentIndex, int index)
 {
 	if (a.type == AgentType::Patrol)
@@ -489,19 +492,21 @@ ColorF agentColor(const Agent& a, int selectedAgentIndex, int index)
 		return (index == selectedAgentIndex)
 			? ColorF{ 0.95, 0.20, 0.20 }   // 赤
 		: ColorF{ 0.55, 0.00, 0.00 };  // 濃い赤
-	} 
+	}
 	else
 	{
 		return (index == selectedAgentIndex)
-			? ColorF{0.20, 0.55, 0.95 }   // 青
+			? ColorF{ 0.20, 0.55, 0.95 }   // 青
 		: ColorF{ 0.00, 0.20, 0.55 };  // 濃い青
-	} 
+	}
 }
 // =========================
 // Main
 // =========================
 void Main()
 {
+	Window::Resize(960, 640);
+	Window::SetStyle(WindowStyle::Sizable);
 	Scene::SetBackground(ColorF{ 0.15, 0.18, 0.22 });
 
 	HexSimulator sim;
@@ -552,39 +557,46 @@ void Main()
 	int selectedAgent = 0;
 	int targetSpot = 0;
 	Array<int> currentPath;
+	bool pathDirty = true;
 
 	while (System::Update())
 	{
-		int start = sim.agents[selectedAgent].cellId;
-		int goal = sim.spots[targetSpot].cellId;
-		currentPath = sim.map.findPath(start, goal);
 		sim.refillFuelIfNeeded();
 
 		// エージェント切り替え
 		if (KeyTab.down())
 		{
 			selectedAgent = (selectedAgent + 1) % sim.agents.size();
+			pathDirty = true;
 		}
 
 		// 1～6 キーで6方向移動
-		if (Key1.down()) sim.moveAgentDir(selectedAgent, 0);
-		if (Key2.down()) sim.moveAgentDir(selectedAgent, 1);
-		if (Key3.down()) sim.moveAgentDir(selectedAgent, 2);
-		if (Key4.down()) sim.moveAgentDir(selectedAgent, 3);
-		if (Key5.down()) sim.moveAgentDir(selectedAgent, 4);
-		if (Key6.down()) sim.moveAgentDir(selectedAgent, 5);
+		if (Key1.down()) { sim.moveAgentDir(selectedAgent, 0); pathDirty = true; }
+		if (Key2.down()) { sim.moveAgentDir(selectedAgent, 1); pathDirty = true; }
+		if (Key3.down()) { sim.moveAgentDir(selectedAgent, 2); pathDirty = true; }
+		if (Key4.down()) { sim.moveAgentDir(selectedAgent, 3); pathDirty = true; }
+		if (Key5.down()) { sim.moveAgentDir(selectedAgent, 4); pathDirty = true; }
+		if (Key6.down()) { sim.moveAgentDir(selectedAgent, 5); pathDirty = true; }
 		if (KeySpace.down())
 		{
-
 			if (currentPath.size() >= 2)
 			{
 				sim.moveAgent(selectedAgent, currentPath[1]);
+				pathDirty = true;
 			}
 			else if (currentPath.size() == 1)
 			{
-				// 目標スポットに到着したら次へ
 				targetSpot = (targetSpot + 1) % sim.spots.size();
+				pathDirty = true;
 			}
+		}
+
+		if (pathDirty)
+		{
+			int start = sim.agents[selectedAgent].cellId;
+			int goal = sim.spots[targetSpot].cellId;
+			currentPath = sim.map.findPath(start, goal);
+			pathDirty = false;
 		}
 
 		// 盤面描画
@@ -652,7 +664,6 @@ void Main()
 
 				for (int i = 0; i < s.stock; ++i)
 				{
-					Vec2 dot = p + Vec2{ -6 + i * 6.0, 16 };
 					font(Format(s.stock)).drawAt(p + Vec2{ 0, 18 }, Palette::White);
 				}
 			};
