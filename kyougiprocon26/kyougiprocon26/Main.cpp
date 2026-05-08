@@ -462,7 +462,7 @@ public:
 
 		a.cellId = toCell;
 		tryCollectUdon(agentId);
-		refillFuelIfNeeded();
+		refillFuelAtCell(toCell);
 		return true;
 	}
 
@@ -529,29 +529,50 @@ public:
 		return false;
 	}
 
-	void refillFuelIfNeeded()
+	bool refillFuelAtCell(int cellId)
 	{
-		for (auto& patrol : agents)
+		if (!map.isValidCellId(cellId))
 		{
-			if (patrol.type != AgentType::Patrol)
+			return false;
+		}
+
+		bool hasSupply = false;
+		Array<int> patrolIds;
+
+		for (int i = 0; i < static_cast<int>(agents.size()); ++i)
+		{
+			const Agent& a = agents[i];
+
+			if (a.cellId != cellId)
 			{
 				continue;
 			}
 
-			if (patrol.patrolIndex < 0 || patrol.patrolIndex >= static_cast<int>(patrolStates.size()))
+			if (a.type == AgentType::Supply)
 			{
-				continue;
+				hasSupply = true;
 			}
-
-			for (const auto& supply : agents)
+			else if (a.type == AgentType::Patrol)
 			{
-				if (supply.type == AgentType::Supply && supply.cellId == patrol.cellId)
+				if (0 <= a.patrolIndex && a.patrolIndex < static_cast<int>(patrolStates.size()))
 				{
-					patrolStates[patrol.patrolIndex].fuel = patrolStates[patrol.patrolIndex].fuelMax;
-					break;
+					patrolIds << i;
 				}
 			}
 		}
+
+		if (!hasSupply)
+		{
+			return false;
+		}
+
+		for (int agentId : patrolIds)
+		{
+			Agent& a = agents[agentId];
+			patrolStates[a.patrolIndex].fuel = patrolStates[a.patrolIndex].fuelMax;
+		}
+
+		return !patrolIds.isEmpty();
 	}
 
 	void beginNewDay()
@@ -683,6 +704,7 @@ void Main()
 		if (KeyTab.down())
 		{
 			selectedAgent = (selectedAgent + 1) % sim.agents.size();
+			pathDirty = true;
 		}
 
 		// 1～6 キーで6方向移動
@@ -777,10 +799,7 @@ void Main()
 				diamond.draw(col);
 				diamond.drawFrame(2, Palette::Black);
 
-				for (int i = 0; i < s.stock; ++i)
-				{
-					font(Format(s.stock)).drawAt(p + Vec2{ 0, 18 }, Palette::White);
-				}
+				font(Format(s.stock)).drawAt(p + Vec2{ 0, 18 }, Palette::White);
 			};
 
 		for (const auto& s : sim.spots)
