@@ -7,7 +7,7 @@ using namespace s3d;
 
 constexpr double kPi = 3.14159265358979323846;
 
-void drawMoveGuide(const Font& uiFont)
+void drawMoveGuide(const Font& uiFont) //六角形の操作ガイド
 {
 	Vec2 center{ Scene::Width() - 140, Scene::Height() - 140 };
 	double r = 42;
@@ -42,14 +42,14 @@ void drawMoveGuide(const Font& uiFont)
 	uiFont(U"Move").drawAt(center, Palette::White);
 }
 
-void drawStatusUI(const Font& font, int selectedAgent)
+void drawStatusUI(const Font& font, int selectedAgent) //左上のテキスト
 {
 	font(U"Tab : switch").draw(20, 20, Palette::White);
 	font(U"1-6 : move").draw(20, 45, Palette::White);
 	font(U"Selected : {}"_fmt(selectedAgent)).draw(20, 70, Palette::White);
 }
 
-void drawCarIcon(const Vec2& center, const ColorF& bodyColor)
+void drawCarIcon(const Vec2& center, const ColorF& bodyColor) //車のデザイン
 {
 	// ===== 車体 =====
 	// 黒い縁
@@ -113,8 +113,8 @@ struct Cell
 	int moveCost = 2;
 };
 
-
-int terrainMoveCost(Terrain t)
+//道路コストの設定
+int terrainMoveCost(Terrain t) 
 {
 	switch (t)
 	{
@@ -289,7 +289,7 @@ public:
 		return (Abs(dx) + Abs(dy) + Abs(dz)) / 2;
 	}
 
-	Array<int> findPath(int start, int goal) const
+	Array<int> findPath(int start, int goal) const //探索　A*
 	{
 		Array<int> open;
 		open << start;
@@ -500,6 +500,48 @@ ColorF agentColor(const Agent& a, int selectedAgentIndex, int index)
 		: ColorF{ 0.00, 0.20, 0.55 };  // 濃い青
 	}
 }
+
+void anykey(const Array<Input> keys){
+	auto key;
+	key = keys[0];
+
+	// エージェント切り替え
+	if (KeyTab.down())
+	{
+		selectedAgent = (selectedAgent + 1) % sim.agents.size();
+		pathDirty = true;
+	}
+
+	// 1～6 キーで6方向移動
+	if (Key1.down()) { sim.moveAgentDir(selectedAgent, 0); pathDirty = true; }
+	if (Key2.down()) { sim.moveAgentDir(selectedAgent, 1); pathDirty = true; }
+	if (Key3.down()) { sim.moveAgentDir(selectedAgent, 2); pathDirty = true; }
+	if (Key4.down()) { sim.moveAgentDir(selectedAgent, 3); pathDirty = true; }
+	if (Key5.down()) { sim.moveAgentDir(selectedAgent, 4); pathDirty = true; }
+	if (Key6.down()) { sim.moveAgentDir(selectedAgent, 5); pathDirty = true; }
+	if (KeySpace.down())
+	{
+		if (currentPath.size() >= 2)
+		{
+			sim.moveAgent(selectedAgent, currentPath[1]);
+			pathDirty = true;
+		}
+		else if (currentPath.size() == 1)
+		{
+			targetSpot = (targetSpot + 1) % sim.spots.size();
+			pathDirty = true;
+		}
+	}
+
+	if (pathDirty)
+	{
+		int start = sim.agents[selectedAgent].cellId;
+		int goal = sim.spots[targetSpot].cellId;
+		currentPath = sim.map.findPath(start, goal);
+		pathDirty = false;
+	}
+}
+
 // =========================
 // Main
 // =========================
@@ -563,41 +605,8 @@ void Main()
 	{
 		sim.refillFuelIfNeeded();
 
-		// エージェント切り替え
-		if (KeyTab.down())
-		{
-			selectedAgent = (selectedAgent + 1) % sim.agents.size();
-			pathDirty = true;
-		}
-
-		// 1～6 キーで6方向移動
-		if (Key1.down()) { sim.moveAgentDir(selectedAgent, 0); pathDirty = true; }
-		if (Key2.down()) { sim.moveAgentDir(selectedAgent, 1); pathDirty = true; }
-		if (Key3.down()) { sim.moveAgentDir(selectedAgent, 2); pathDirty = true; }
-		if (Key4.down()) { sim.moveAgentDir(selectedAgent, 3); pathDirty = true; }
-		if (Key5.down()) { sim.moveAgentDir(selectedAgent, 4); pathDirty = true; }
-		if (Key6.down()) { sim.moveAgentDir(selectedAgent, 5); pathDirty = true; }
-		if (KeySpace.down())
-		{
-			if (currentPath.size() >= 2)
-			{
-				sim.moveAgent(selectedAgent, currentPath[1]);
-				pathDirty = true;
-			}
-			else if (currentPath.size() == 1)
-			{
-				targetSpot = (targetSpot + 1) % sim.spots.size();
-				pathDirty = true;
-			}
-		}
-
-		if (pathDirty)
-		{
-			int start = sim.agents[selectedAgent].cellId;
-			int goal = sim.spots[targetSpot].cellId;
-			currentPath = sim.map.findPath(start, goal);
-			pathDirty = false;
-		}
+		const Array<Input> keys = Keyboard::GetAllInputs();
+		if(keys.size() > 0) anykey(keys);		
 
 		// 盤面描画
 		for (int id = 0; id < sim.map.width * sim.map.height; ++id)
