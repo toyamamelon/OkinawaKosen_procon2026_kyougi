@@ -1,225 +1,87 @@
 ﻿# include <Siv3D.hpp>
 # include <cmath>
 # include <utility>
-#include <climits>
+# include <climits>
+# include <queue>
 
 using namespace s3d;
 
 constexpr double kPi = 3.14159265358979323846;
 
-void drawMoveGuide(const Font& uiFont)
-{
-	Vec2 center{ Scene::Width() - 140, Scene::Height() - 140 };
-	double r = 42;
-
-	Array<Vec2> pts;
-	for (int i = 0; i < 6; ++i)
-	{
-		double ang = Math::ToRadians(60 * i - 30);
-		pts << center + Vec2{ Math::Cos(ang) * r, Math::Sin(ang) * r };
-	}
-
-	Polygon hex{ pts };
-	hex.draw(ColorF{ 0.15, 0.15, 0.18, 0.85 });
-	hex.drawFrame(2, Palette::White);
-
-	const Array<Vec2> labelOffsets =
-	{
-		Vec2{ 1.00,  0.00 },
-		Vec2{ 0.55, -0.95 },
-		Vec2{ -0.55, -0.95 },
-		Vec2{ -1.00,  0.00 },
-		Vec2{ -0.55,  0.95 },
-		Vec2{ 0.55,  0.95 }
-	};
-
-	for (int i = 0; i < 6; ++i)
-	{
-		Vec2 pos = center + labelOffsets[i] * (r + 24);
-		uiFont(Format(i + 1)).drawAt(pos, Palette::Yellow);
-	}
-
-	uiFont(U"Move").drawAt(center, Palette::White);
-}
-
-void drawStatusUI(const Font& font, int selectedAgent)
-{
-	font(U"Tab : switch").draw(20, 20, Palette::White);
-	font(U"1-6 : move").draw(20, 45, Palette::White);
-	font(U"Selected : {}"_fmt(selectedAgent)).draw(20, 70, Palette::White);
-}
-
-void drawCarIcon(const Vec2& center, const ColorF& bodyColor)
-{
-	// ===== 車体 =====
-	// 黒い縁
-	RoundRect{ RectF{ center.x - 38, center.y - 14, 76, 30 }, 8 }.draw(Palette::Black);
-	// 本体
-	RoundRect{ RectF{ center.x - 34, center.y - 10, 68, 22 }, 7 }.draw(bodyColor);
-
-	// ===== 上の屋根部分 =====
-	RoundRect{ RectF{ center.x - 18, center.y - 28, 34, 18 }, 6 }.draw(Palette::Black);
-	RoundRect{ RectF{ center.x - 14, center.y - 24, 26, 12 }, 4 }.draw(bodyColor);
-
-	// ===== 窓 =====
-	RoundRect{ RectF{ center.x - 14, center.y - 18, 16, 10 }, 3 }.draw(Palette::Black);
-	RoundRect{ RectF{ center.x - 12, center.y - 16, 12, 6 }, 2 }.draw(Palette::White);
-
-	// ===== タイヤ =====
-	Circle{ center.x - 18, center.y + 16, 12 }.draw(Palette::Black);
-	Circle{ center.x - 18, center.y + 16, 9 }.draw(ColorF{ 0.25, 0.25, 0.25 });
-
-	Circle{ center.x + 18, center.y + 16, 12 }.draw(Palette::Black);
-	Circle{ center.x + 18, center.y + 16, 9 }.draw(ColorF{ 0.25, 0.25, 0.25 });
-}
+// =========================
+// Terrain / RoadLevel
+// =========================
+enum class Terrain : uint8 { Plain, Mountain, Lake, Road };
+enum class RoadLevel : uint8 { Clear = 0, Crowded = 1, Jammed = 2 };
+enum class AgentType : uint8 { Patrol, Supply };
 
 // =========================
-// Hex coord (axial)
+// HexCoord (axial)
 // =========================
-struct HexCoord
-{
-	int q = 0;
-	int r = 0;
-};
+struct HexCoord { int q = 0, r = 0; };
 
 static const Array<HexCoord> HEX_DIRS =
 {
-	HexCoord{ +1,  0 },
-	HexCoord{ +1, -1 },
-	HexCoord{  0, -1 },
-	HexCoord{ -1,  0 },
-	HexCoord{ -1, +1 },
-	HexCoord{  0, +1 }
+	{ +1,  0 }, { +1, -1 }, {  0, -1 },
+	{ -1,  0 }, { -1, +1 }, {  0, +1 }
 };
 
 // =========================
-// Terrain
+// MapConfig  ← 試合を通じて変わらない固定情報
 // =========================
-enum class Terrain : uint8
-{
-	Plain,
-	Mountain,
-	Lake,
-	Road
-};
-
-// =========================
-// Cell
-// =========================
-struct Cell
+struct CellInfo
 {
 	Terrain terrain = Terrain::Plain;
-	bool walkable = true;
-	int stepCost = 2; // 時間
-	int fuelCost = 2; // 燃料
+	bool    walkable = true;
 };
 
-
-int terrainStepCost(Terrain t)
-{
-	switch (t)
-	{
-	case Terrain::Plain:    return 2;
-	case Terrain::Mountain: return 3;
-	case Terrain::Road:     return 1;
-	case Terrain::Lake:     return INT_MAX / 4;
-	}
-	return INT_MAX / 4;
-}
-
-int terrainFuelCost(Terrain t)
-{
-	switch (t)
-	{
-	case Terrain::Plain:    return 1;
-	case Terrain::Mountain: return 2;
-	case Terrain::Road:     return 2;
-	case Terrain::Lake:     return INT_MAX / 4;
-	}
-	return INT_MAX / 4;
-}
-
-bool terrainWalkable(Terrain t)
-{
-	return (t != Terrain::Lake);
-}
-// =========================
-// Agent
-// =========================
-enum class AgentType : uint8
-{
-	Patrol,   // 巡回車
-	Supply    // 補給車
-};
-
-struct Agent
-{
-	int id = -1;
-	int cellId = -1;
-	AgentType type = AgentType::Patrol;
-	int patrolIndex = -1;   // 巡回車だけ使う
-};
-
-struct PatrolState
-{
-	int fuel = 10;
-	int fuelMax = 10;
-	int udon = 0;
-	HashSet<int> visitedToday;
-};
-
-struct Spot
+struct SpotInfo
 {
 	int id = -1;
 	int cellId = -1;
 	int series = 0;
-	int stock = 1;
+	int stockMax = 1;
 };
 
-// =========================
-// HexMap
-// =========================
-class HexMap
+struct AgentInit
 {
-public:
+	int       id = -1;
+	AgentType type = AgentType::Patrol;
+	int       cellId = -1;
+	int       fuelMax = 10; // 補給車は無視
+};
+
+struct MapConfig
+{
 	int width = 0;
 	int height = 0;
-	Array<Cell> cells;
+	Array<CellInfo>  cells;
+	Array<SpotInfo>  spots;
+	Array<AgentInit> agentInits;
 
 	void init(int h, int w)
 	{
-		height = h;
-		width = w;
-		cells.assign(h * w, Cell{});
+		height = h; width = w;
+		cells.assign(h * w, CellInfo{});
 	}
 
-	bool inBoundsRC(int row, int col) const
+	bool inBoundsRC(int r, int c) const
 	{
-		return (0 <= row && row < height && 0 <= col && col < width);
+		return (0 <= r && r < height && 0 <= c && c < width);
 	}
 
-	int indexRC(int row, int col) const
-	{
-		return row * width + col;
-	}
+	int indexRC(int r, int c) const { return r * width + c; }
 
-	std::pair<int, int> rcFromIndex(int id) const
-	{
-		return { id / width, id % width };
-	}
+	std::pair<int, int> rcFromIndex(int id) const { return { id / width, id % width }; }
 
 	static HexCoord oddrToAxial(int row, int col)
 	{
-		int q = col - (row - (row & 1)) / 2;
-		int r = row;
-		return { q, r };
+		return { col - (row - (row & 1)) / 2, row };
 	}
 
 	static std::pair<int, int> axialToOddr(const HexCoord& h)
 	{
-		int row = h.r;
-		int col = h.q + (h.r - (h.r & 1)) / 2;
-		return { row, col };
+		return { h.r, h.q + (h.r - (h.r & 1)) / 2 };
 	}
 
 	HexCoord coordOf(int cellId) const
@@ -231,42 +93,18 @@ public:
 	int cellIdOf(const HexCoord& h) const
 	{
 		auto rc = axialToOddr(h);
-		if (!inBoundsRC(rc.first, rc.second))
-		{
-			return -1;
-		}
+		if (!inBoundsRC(rc.first, rc.second)) return -1;
 		return indexRC(rc.first, rc.second);
 	}
 
-	bool isValidCellId(int id) const
-	{
-		return (0 <= id && id < static_cast<int>(cells.size()));
-	}
-
-	bool isWalkable(int id) const
-	{
-		if (!isValidCellId(id))
-		{
-			return false;
-		}
-		return cells[id].walkable;
-	}
+	bool isValid(int id) const { return 0 <= id && id < (int)cells.size(); }
 
 	int neighbor(int cellId, int dir) const
 	{
-		if (!isValidCellId(cellId) || dir < 0 || dir >= 6)
-		{
-			return -1;
-		}
-
+		if (!isValid(cellId) || dir < 0 || dir >= 6) return -1;
 		HexCoord h = coordOf(cellId);
-		HexCoord nh{ h.q + HEX_DIRS[dir].q, h.r + HEX_DIRS[dir].r };
-		int nid = cellIdOf(nh);
-
-		if (nid == -1 || !isWalkable(nid))
-		{
-			return -1;
-		}
+		int nid = cellIdOf({ h.q + HEX_DIRS[dir].q, h.r + HEX_DIRS[dir].r });
+		if (nid == -1 || !cells[nid].walkable) return -1;
 		return nid;
 	}
 
@@ -274,369 +112,354 @@ public:
 	{
 		auto rc = rcFromIndex(cellId);
 		HexCoord h = oddrToAxial(rc.first, rc.second);
-
-		const double x = origin.x + hexSize * (std::sqrt(3.0) * h.q + std::sqrt(3.0) * 0.5 * h.r);
-		const double y = origin.y + hexSize * (1.5 * h.r);
-
-		return { x, y };
+		return {
+			origin.x + hexSize * (std::sqrt(3.0) * h.q + std::sqrt(3.0) * 0.5 * h.r),
+			origin.y + hexSize * 1.5 * h.r
+		};
 	}
 
 	Polygon hexPolygon(const Vec2& center, double hexSize) const
 	{
 		Array<Vec2> pts;
-		pts.reserve(6);
-
 		for (int i = 0; i < 6; ++i)
 		{
-			const double ang = (60.0 * i - 30.0) * kPi / 180.0;
-			pts << (center + Vec2{ hexSize * std::cos(ang), hexSize * std::sin(ang) });
+			double ang = (60.0 * i - 30.0) * kPi / 180.0;
+			pts << center + Vec2{ hexSize * std::cos(ang), hexSize * std::sin(ang) };
 		}
-
 		return Polygon{ pts };
 	}
 
 	int hexDistance(int a, int b) const
 	{
-		HexCoord A = coordOf(a);
-		HexCoord B = coordOf(b);
-
-		int dx = A.q - B.q;
-		int dz = A.r - B.r;
-		int dy = -dx - dz;
-
+		HexCoord A = coordOf(a), B = coordOf(b);
+		int dx = A.q - B.q, dz = A.r - B.r, dy = -dx - dz;
 		return (Abs(dx) + Abs(dy) + Abs(dz)) / 2;
-	}
-
-	Array<int> findPath(int start, int goal) const
-	{
-		Array<int> open;
-		open << start;
-
-		HashTable<int, int> came;
-		HashTable<int, int> gScore;
-		HashTable<int, int> fScore;
-
-		gScore[start] = 0;
-		fScore[start] = hexDistance(start, goal);
-
-		while (!open.isEmpty())
-		{
-			int current = open.front();
-			int best = fScore[current];
-
-			for (int n : open)
-			{
-				if (fScore[n] < best)
-				{
-					best = fScore[n];
-					current = n;
-				}
-			}
-
-			if (current == goal)
-			{
-				Array<int> path;
-				int cur = goal;
-
-				while (came.contains(cur))
-				{
-					path << cur;
-					cur = came[cur];
-				}
-
-				path << start;
-				path.reverse();
-				return path;
-			}
-
-			open.remove(current);
-
-			for (int dir = 0; dir < 6; ++dir)
-			{
-				int next = neighbor(current, dir);
-				if (next == -1) continue;
-
-				int tentative = gScore[current] + cells[current].stepCost;
-
-				if (!gScore.contains(next) || tentative < gScore[next])
-				{
-					came[next] = current;
-					gScore[next] = tentative;
-					fScore[next] = tentative + hexDistance(next, goal);
-
-					if (!open.includes(next))
-						open << next;
-				}
-			}
-		}
-
-		return {};
 	}
 };
 
 // =========================
-// Simple simulator
+// コスト関数  ← 1か所にまとめる
+// =========================
+int getStepCost(int cellId, const MapConfig& map, const Array<RoadLevel>& roadLevels)
+{
+	switch (map.cells[cellId].terrain)
+	{
+	case Terrain::Plain:    return 2;
+	case Terrain::Mountain: return 3;
+	case Terrain::Lake:     return INT_MAX / 4;
+	case Terrain::Road:
+		switch (roadLevels[cellId])
+		{
+		case RoadLevel::Clear:   return 1;
+		case RoadLevel::Crowded: return 2;
+		case RoadLevel::Jammed:  return 4;
+		}
+	}
+	return INT_MAX / 4;
+}
+
+int getFuelCost(int cellId, const MapConfig& map)
+{
+	switch (map.cells[cellId].terrain)
+	{
+	case Terrain::Plain:    return 1;
+	case Terrain::Mountain: return 2;
+	case Terrain::Road:     return 2;
+	default:                return INT_MAX / 4;
+	}
+}
+
+// A* : MapConfig + 今日のroadLevelsを受け取る
+Array<int> findPath(int start, int goal,
+	const MapConfig& map, const Array<RoadLevel>& roadLevels)
+{
+	if (!map.isValid(start) || !map.isValid(goal)) return {};
+	if (start == goal) return { start };
+
+	using T = std::pair<int, int>;
+	std::priority_queue<T, std::vector<T>, std::greater<T>> open;
+
+	HashTable<int, int> came, gScore;
+	gScore[start] = 0;
+	open.push({ map.hexDistance(start, goal), start });
+
+	while (!open.empty())
+	{
+		auto top = open.top(); open.pop();
+		int f = top.first, cur = top.second;
+
+		if (cur == goal)
+		{
+			Array<int> path;
+			for (int c = goal; came.contains(c); c = came[c]) path << c;
+			path << start;
+			path.reverse();
+			return path;
+		}
+
+		for (int dir = 0; dir < 6; ++dir)
+		{
+			int next = map.neighbor(cur, dir);
+			if (next == -1) continue;
+
+			int tentative = gScore[cur] + getStepCost(cur, map, roadLevels);
+			if (!gScore.contains(next) || tentative < gScore[next])
+			{
+				came[next] = cur;
+				gScore[next] = tentative;
+				open.push({ tentative + map.hexDistance(next, goal), next });
+			}
+		}
+	}
+	return {};
+}
+
+// =========================
+// DayState  ← サーバーから毎日受け取る情報
+// =========================
+struct AgentState
+{
+	int cellId = -1;
+	int fuel = 0;  // 補給車は無視
+};
+
+struct PatrolExtra
+{
+	int          udon = 0;
+	HashSet<int> visitedToday;
+};
+
+struct DayState
+{
+	int day = 1;
+	int totalDays = 6;
+	int stepInDay = 0;
+	int stepsPerDay = 20;
+
+	Array<RoadLevel>  roadLevels;  // cellId -> 道路状態（毎日サーバーから来る）
+	Array<AgentState> agentStates; // agentId -> 位置・燃料
+	Array<int>        spotStock;   // spotId  -> 今日の在庫
+
+	// 試合通算・ビジュアライザ用（通信では来ない、自前管理）
+	Array<PatrolExtra> patrolExtras; // 巡回車インデックス -> うどん数・訪問記録
+
+	// --- サーバーから受け取ったデータで初期化するイメージ ---
+	void initFromConfig(const MapConfig& cfg)
+	{
+		int numCells = cfg.width * cfg.height;
+		roadLevels.assign(numCells, RoadLevel::Clear);
+
+		agentStates.resize(cfg.agentInits.size());
+		for (int i = 0; i < (int)cfg.agentInits.size(); ++i)
+		{
+			agentStates[i].cellId = cfg.agentInits[i].cellId;
+			agentStates[i].fuel = cfg.agentInits[i].fuelMax;
+		}
+
+		spotStock.resize(cfg.spots.size());
+		for (int i = 0; i < (int)cfg.spots.size(); ++i)
+			spotStock[i] = cfg.spots[i].stockMax;
+
+		// 巡回車の数だけ PatrolExtra を確保
+		int patrolCount = 0;
+		for (const auto& a : cfg.agentInits)
+			if (a.type == AgentType::Patrol) ++patrolCount;
+		patrolExtras.resize(patrolCount);
+	}
+
+	void beginNewDay()
+	{
+		stepInDay = 0;
+		++day;
+		for (auto& pe : patrolExtras) pe.visitedToday.clear();
+		// spotStock は サーバーから受け取るか、ここで stockMax に戻す
+	}
+
+	bool isGameOver() const { return day > totalDays; }
+};
+
+// =========================
+// HexSimulator  ← MapConfig + DayState を使う
 // =========================
 class HexSimulator
 {
 public:
-	HexMap map;
-	Array<Agent> agents;
-	Array<Spot> spots;
-	Array<PatrolState> patrolStates;
+	MapConfig cfg;
+	DayState  day;
 
-	int addPatrolAgent(int cellId, int fuel = 10, int fuelMax = 10)
+	// agentId が何番目の巡回車か（-1なら補給車）
+	int patrolIndexOf(int agentId) const
 	{
-		const int patrolIndex = static_cast<int>(patrolStates.size());
-		patrolStates << PatrolState{ fuel, fuelMax, 0, {} };
-
-		const int id = static_cast<int>(agents.size());
-		agents << Agent{ id, cellId, AgentType::Patrol, patrolIndex };
-
-		return id;
-	}
-
-	int addSupplyAgent(int cellId)
-	{
-		const int id = static_cast<int>(agents.size());
-		agents << Agent{ id, cellId, AgentType::Supply, -1 };
-		return id;
+		int pi = 0;
+		for (int i = 0; i < agentId; ++i)
+			if (cfg.agentInits[i].type == AgentType::Patrol) ++pi;
+		return (cfg.agentInits[agentId].type == AgentType::Patrol) ? pi : -1;
 	}
 
 	bool moveAgent(int agentId, int toCell)
 	{
-		if (agentId < 0 || agentId >= static_cast<int>(agents.size()))
-		{
-			return false;
-		}
+		if (agentId < 0 || agentId >= (int)cfg.agentInits.size()) return false;
 
-		Agent& a = agents[agentId];
+		AgentState& as = day.agentStates[agentId];
+		AgentType   type = cfg.agentInits[agentId].type;
 
-		if (toCell == a.cellId)
-		{
-			return true;
-		}
+		if (toCell == as.cellId) return true; // 待機
 
-		if (!map.isValidCellId(toCell) || !map.isWalkable(toCell))
-		{
-			return false;
-		}
+		if (!cfg.isValid(toCell) || !cfg.cells[toCell].walkable) return false;
 
 		// 隣接チェック
 		bool adjacent = false;
 		for (int dir = 0; dir < 6; ++dir)
+			if (cfg.neighbor(as.cellId, dir) == toCell) { adjacent = true; break; }
+		if (!adjacent) return false;
+
+		// 現在地基準のコスト
+		int steps = getStepCost(as.cellId, cfg, day.roadLevels);
+		int fuel = getFuelCost(as.cellId, cfg);
+
+		// ステップ不足
+		if (day.stepInDay + steps > day.stepsPerDay) return false;
+
+		// 巡回車：燃料チェック
+		if (type == AgentType::Patrol)
 		{
-			if (map.neighbor(a.cellId, dir) == toCell)
-			{
-				adjacent = true;
-				break;
-			}
+			if (as.fuel < fuel) return false;
+			as.fuel -= fuel;
 		}
 
-		if (!adjacent)
-		{
-			return false;
-		}
+		as.cellId = toCell;
+		day.stepInDay += steps;
 
-		// 現在地のコストを使う
-		const Cell& cell = map.cells[a.cellId];
-
-		const int stepCost = cell.stepCost;
-		const int fuelCost = cell.fuelCost;
-
-		// 巡回車だけ燃料を使う
-		if (a.type == AgentType::Patrol)
-		{
-			if (a.patrolIndex < 0 || a.patrolIndex >= static_cast<int>(patrolStates.size()))
-			{
-				return false;
-			}
-
-			PatrolState& ps = patrolStates[a.patrolIndex];
-			if (ps.fuel < fuelCost)
-			{
-				return false;
-			}
-			ps.fuel -= fuelCost;
-		}
-
-		a.cellId = toCell;
 		tryCollectUdon(agentId);
 		refillFuelAtCell(toCell);
+
 		return true;
 	}
 
 	bool moveAgentDir(int agentId, int dir)
 	{
-		if (agentId < 0 || agentId >= static_cast<int>(agents.size()))
-		{
-			return false;
-		}
-
-		int to = map.neighbor(agents[agentId].cellId, dir);
-		if (to == -1)
-		{
-			return false;
-		}
-
+		if (agentId < 0 || agentId >= (int)cfg.agentInits.size()) return false;
+		int to = cfg.neighbor(day.agentStates[agentId].cellId, dir);
+		if (to == -1) return false;
 		return moveAgent(agentId, to);
 	}
 
 	bool tryCollectUdon(int agentId)
 	{
-		if (agentId < 0 || agentId >= static_cast<int>(agents.size()))
+		if (cfg.agentInits[agentId].type != AgentType::Patrol) return false;
+		int pi = patrolIndexOf(agentId);
+		if (pi < 0) return false;
+
+		PatrolExtra& pe = day.patrolExtras[pi];
+		AgentState& as = day.agentStates[agentId];
+
+		for (int si = 0; si < (int)cfg.spots.size(); ++si)
 		{
-			return false;
-		}
+			if (cfg.spots[si].cellId != as.cellId) continue;
+			if (pe.visitedToday.contains(si))      return false;
+			if (day.spotStock[si] <= 0)            return false;
 
-		Agent& a = agents[agentId];
-		if (a.type != AgentType::Patrol)
-		{
-			return false;
-		}
-
-		if (a.patrolIndex < 0 || a.patrolIndex >= static_cast<int>(patrolStates.size()))
-		{
-			return false;
-		}
-
-		PatrolState& ps = patrolStates[a.patrolIndex];
-
-		for (auto& spot : spots)
-		{
-			if (spot.cellId != a.cellId)
-			{
-				continue;
-			}
-
-			// そのスポットは今日もう取っている
-			if (ps.visitedToday.contains(spot.id))
-			{
-				return false;
-			}
-
-			if (spot.stock <= 0)
-			{
-				return false;
-			}
-
-			--spot.stock;
-			++ps.udon;
-			ps.visitedToday.insert(spot.id);
+			--day.spotStock[si];
+			++pe.udon;
+			pe.visitedToday.emplace(si);
 			return true;
 		}
-
 		return false;
 	}
 
 	bool refillFuelAtCell(int cellId)
 	{
-		if (!map.isValidCellId(cellId))
-		{
-			return false;
-		}
+		if (!cfg.isValid(cellId)) return false;
 
-		bool hasSupply = false;
+		bool       hasSupply = false;
 		Array<int> patrolIds;
 
-		for (int i = 0; i < static_cast<int>(agents.size()); ++i)
+		for (int i = 0; i < (int)cfg.agentInits.size(); ++i)
 		{
-			const Agent& a = agents[i];
-
-			if (a.cellId != cellId)
-			{
-				continue;
-			}
-
-			if (a.type == AgentType::Supply)
-			{
-				hasSupply = true;
-			}
-			else if (a.type == AgentType::Patrol)
-			{
-				if (0 <= a.patrolIndex && a.patrolIndex < static_cast<int>(patrolStates.size()))
-				{
-					patrolIds << i;
-				}
-			}
+			if (day.agentStates[i].cellId != cellId) continue;
+			if (cfg.agentInits[i].type == AgentType::Supply) hasSupply = true;
+			else if (cfg.agentInits[i].type == AgentType::Patrol) patrolIds << i;
 		}
 
-		if (!hasSupply)
-		{
-			return false;
-		}
+		if (!hasSupply) return false;
 
-		for (int agentId : patrolIds)
-		{
-			Agent& a = agents[agentId];
-			patrolStates[a.patrolIndex].fuel = patrolStates[a.patrolIndex].fuelMax;
-		}
+		for (int id : patrolIds)
+			day.agentStates[id].fuel = cfg.agentInits[id].fuelMax;
 
 		return !patrolIds.isEmpty();
 	}
 
-	void beginNewDay()
+	int totalUdon() const
 	{
-		for (auto& ps : patrolStates)
-		{
-			ps.visitedToday.clear();
-		}
+		int sum = 0;
+		for (const auto& pe : day.patrolExtras) sum += pe.udon;
+		return sum;
+	}
+
+	// 日付を進める（移動とは独立した操作）
+	// 本番ではサーバーから次の DayState を受け取って上書きする
+	void endDay()
+	{
+		day.beginNewDay();
+
+		// ローカルシミュレーター用: 在庫を最大値まで補充
+		// 本番ではサーバーから来る spotStock で上書きする
+		for (int si = 0; si < (int)cfg.spots.size(); ++si)
+			day.spotStock[si] = cfg.spots[si].stockMax;
+	}
+
+	Array<int> pathTo(int agentId, int goalCell) const
+	{
+		return findPath(day.agentStates[agentId].cellId, goalCell, cfg, day.roadLevels);
 	}
 };
 
-void drawAllAgentInfoUI(const Font& font, const HexSimulator& sim)
+// =========================
+// Draw helpers
+// =========================
+void drawCarIcon(const Vec2& c, const ColorF& col)
 {
-	const double x = 20.0;
-	const double lineH = 24.0;
-	const double headerH = 28.0;
-	const double panelH = headerH + lineH * sim.agents.size() + 16.0;
-
-	const double y = Max(20.0, Scene::Height() - panelH - 20.0);
-
-	RectF panel{ x - 6, y - 10, 320, panelH };
-	panel.draw(ColorF{ 0.1, 0.1, 0.12, 0.75 });
-	panel.drawFrame(1, Palette::White);
-
-	font(U"Agents").draw(x, y - 2, Palette::White);
-
-	for (size_t i = 0; i < sim.agents.size(); ++i)
-	{
-		const Agent& a = sim.agents[i];
-		const String typeText = (a.type == AgentType::Patrol) ? U"巡回車" : U"補給車";
-
-		String statusText;
-		if (a.type == AgentType::Patrol && a.patrolIndex >= 0 && a.patrolIndex < static_cast<int>(sim.patrolStates.size()))
-		{
-			const PatrolState& ps = sim.patrolStates[a.patrolIndex];
-			statusText = U"Fuel {}/{}  Udon {}"_fmt(ps.fuel, ps.fuelMax, ps.udon);
-		}
-		else
-		{
-			statusText = U"Fuel ∞  Udon -";
-		}
-
-		const double yy = y + headerH + lineH * i;
-
-		font(U"#{}  {}  {}  Cell {}"_fmt(
-			i, typeText, statusText, a.cellId
-		)).draw(x, yy, Palette::White);
-	}
+	RoundRect{ RectF{ c.x - 38, c.y - 14, 76, 30 }, 8 }.draw(Palette::Black);
+	RoundRect{ RectF{ c.x - 34, c.y - 10, 68, 22 }, 7 }.draw(col);
+	RoundRect{ RectF{ c.x - 18, c.y - 28, 34, 18 }, 6 }.draw(Palette::Black);
+	RoundRect{ RectF{ c.x - 14, c.y - 24, 26, 12 }, 4 }.draw(col);
+	RoundRect{ RectF{ c.x - 14, c.y - 18, 16, 10 }, 3 }.draw(Palette::Black);
+	RoundRect{ RectF{ c.x - 12, c.y - 16, 12,  6 }, 2 }.draw(Palette::White);
+	Circle{ c.x - 18, c.y + 16, 12 }.draw(Palette::Black);
+	Circle{ c.x - 18, c.y + 16,  9 }.draw(ColorF{ 0.25,0.25,0.25 });
+	Circle{ c.x + 18, c.y + 16, 12 }.draw(Palette::Black);
+	Circle{ c.x + 18, c.y + 16,  9 }.draw(ColorF{ 0.25,0.25,0.25 });
 }
-ColorF agentColor(const Agent& a, int selectedAgentIndex, int index)
+
+ColorF spotColor(int series)
 {
-	if (a.type == AgentType::Patrol)
+	static const Array<ColorF> cols =
 	{
-		return (index == selectedAgentIndex)
-			? ColorF{ 0.95, 0.20, 0.20 }   // 赤
-		: ColorF{ 0.55, 0.00, 0.00 };  // 濃い赤
-	}
-	else
-	{
-		return (index == selectedAgentIndex)
-			? ColorF{ 0.20, 0.55, 0.95 }   // 青
-		: ColorF{ 0.00, 0.20, 0.55 };  // 濃い青
-	}
+		{1.0,0.3,0.3},{0.3,1.0,0.3},{0.3,0.5,1.0},
+		{1.0,0.8,0.3},{0.8,0.3,1.0},{0.3,1.0,1.0}
+	};
+	return cols[series % cols.size()];
 }
+
+void drawMoveGuide(const Font& f)
+{
+	Vec2 center{ Scene::Width() - 140.0, Scene::Height() - 140.0 };
+	double r = 42;
+	Array<Vec2> pts;
+	for (int i = 0; i < 6; ++i)
+	{
+		double ang = Math::ToRadians(60 * i - 30);
+		pts << center + Vec2{ Math::Cos(ang) * r, Math::Sin(ang) * r };
+	}
+	Polygon hex{ pts };
+	hex.draw(ColorF{ 0.15,0.15,0.18,0.85 });
+	hex.drawFrame(2, Palette::White);
+	const Array<Vec2> off = { {1,0},{0.55,-0.95},{-0.55,-0.95},{-1,0},{-0.55,0.95},{0.55,0.95} };
+	for (int i = 0; i < 6; ++i)
+		f(Format(i + 1)).drawAt(center + off[i] * (r + 24), Palette::Yellow);
+	f(U"Move").drawAt(center, Palette::White);
+}
+
 // =========================
 // Main
 // =========================
@@ -644,76 +467,69 @@ void Main()
 {
 	Window::Resize(960, 640);
 	Window::SetStyle(WindowStyle::Sizable);
-	Scene::SetBackground(ColorF{ 0.15, 0.18, 0.22 });
+	Scene::SetBackground(ColorF{ 0.15,0.18,0.22 });
 
+	// --- MapConfig を作る（本番ではサーバーからパース）---
 	HexSimulator sim;
-	sim.map.init(5, 5);
-	// --- ここからマップ作成 ---
+	sim.cfg.init(5, 5);
 
 	auto setTerrain = [&](int r, int c, Terrain t)
 		{
-			if (!sim.map.inBoundsRC(r, c))
-			{
-				return;
-			}
-
-			int id = sim.map.indexRC(r, c);
-			auto& cell = sim.map.cells[id];
-
-			cell.terrain = t;
-			cell.walkable = terrainWalkable(t);
-			cell.stepCost = terrainStepCost(t);
-			cell.fuelCost = terrainFuelCost(t);
+			if (!sim.cfg.inBoundsRC(r, c)) return;
+			int id = sim.cfg.indexRC(r, c);
+			sim.cfg.cells[id].terrain = t;
+			sim.cfg.cells[id].walkable = (t != Terrain::Lake);
 		};
 
-	setTerrain(1, 2, Terrain::Mountain);
-	setTerrain(1, 3, Terrain::Mountain);
+	setTerrain(1, 2, Terrain::Mountain); setTerrain(1, 3, Terrain::Mountain);
+	setTerrain(2, 2, Terrain::Lake);     setTerrain(3, 2, Terrain::Lake);
+	setTerrain(2, 0, Terrain::Road);     setTerrain(2, 1, Terrain::Road);
+	setTerrain(1, 1, Terrain::Road);     setTerrain(0, 1, Terrain::Road);
 
-	setTerrain(2, 2, Terrain::Lake);
-	setTerrain(3, 2, Terrain::Lake);
+	// エージェント初期設定
+	sim.cfg.agentInits << AgentInit{ 0, AgentType::Patrol, sim.cfg.indexRC(2,1), 10 };
+	sim.cfg.agentInits << AgentInit{ 1, AgentType::Supply, sim.cfg.indexRC(4,4), 0 };
 
-	setTerrain(2, 0, Terrain::Road);
-	setTerrain(2, 1, Terrain::Road);
-	setTerrain(1, 1, Terrain::Road);
-	setTerrain(0, 1, Terrain::Road);
+	// スポット設定
+	sim.cfg.spots << SpotInfo{ 0, sim.cfg.indexRC(0,3), 0, 1 };
+	sim.cfg.spots << SpotInfo{ 1, sim.cfg.indexRC(3,1), 1, 2 };
+	sim.cfg.spots << SpotInfo{ 2, sim.cfg.indexRC(4,3), 2, 1 };
 
-	setTerrain(0, 3, Terrain::Plain);
-	// エージェント配置
-	sim.addPatrolAgent(sim.map.indexRC(2, 1), 10, 10);
-	sim.addSupplyAgent(sim.map.indexRC(4, 4));
-
-	//スポット配置
-	sim.spots << Spot{ 0, sim.map.indexRC(0, 3), 0, 1 };
-	sim.spots << Spot{ 1, sim.map.indexRC(3, 1), 1, 2 };
-	sim.spots << Spot{ 2, sim.map.indexRC(4, 3), 2, 1 };
+	// --- DayState を初期化（本番では1日目のサーバー応答をパース）---
+	sim.day.totalDays = 6;
+	sim.day.stepsPerDay = 20;
+	sim.day.initFromConfig(sim.cfg);
 
 	const double hexSize = 32.0;
-	const Vec2 origin{ 140, 120 };
-	const Font font{ 18 };
-	const Font uiFont{ 20 };
+	const Vec2   origin{ 140, 120 };
+	const Font   font{ 18 };
+	const Font   uiFont{ 20 };
 
-	int selectedAgent = 0;
-	int targetSpot = 0;
-	Array<int> currentPath;
+	int  selectedAgent = 0;
+	int  targetSpot = 0;
 	bool pathDirty = true;
+	Array<int> currentPath;
 
 	while (System::Update())
 	{
-
-		// エージェント切り替え
-		if (KeyTab.down())
+		if (sim.day.isGameOver())
 		{
-			selectedAgent = (selectedAgent + 1) % sim.agents.size();
-			pathDirty = true;
+			Rect{ 0,0,Scene::Width(),Scene::Height() }.draw(ColorF{ 0,0,0,0.65 });
+			font(U"=== 試合終了 ===").drawAt(Scene::Center() + Vec2{ 0,-30 }, Palette::Yellow);
+			font(U"獲得うどん: {}玉"_fmt(sim.totalUdon())).drawAt(Scene::Center(), Palette::White);
+			continue;
 		}
 
-		// 1～6 キーで6方向移動
+		// --- 入力 ---
+		if (KeyTab.down()) { selectedAgent = (selectedAgent + 1) % (int)sim.cfg.agentInits.size(); pathDirty = true; }
+
 		if (Key1.down()) { sim.moveAgentDir(selectedAgent, 0); pathDirty = true; }
 		if (Key2.down()) { sim.moveAgentDir(selectedAgent, 1); pathDirty = true; }
 		if (Key3.down()) { sim.moveAgentDir(selectedAgent, 2); pathDirty = true; }
 		if (Key4.down()) { sim.moveAgentDir(selectedAgent, 3); pathDirty = true; }
 		if (Key5.down()) { sim.moveAgentDir(selectedAgent, 4); pathDirty = true; }
 		if (Key6.down()) { sim.moveAgentDir(selectedAgent, 5); pathDirty = true; }
+
 		if (KeySpace.down())
 		{
 			if (currentPath.size() >= 2)
@@ -723,92 +539,122 @@ void Main()
 			}
 			else if (currentPath.size() == 1)
 			{
-				targetSpot = (targetSpot + 1) % sim.spots.size();
+				targetSpot = (targetSpot + 1) % (int)sim.cfg.spots.size();
 				pathDirty = true;
 			}
 		}
 
+		// Enter: 日付を進める（残りステップに関わらず強制的に翌日へ）
+		if (KeyEnter.down())
+		{
+			sim.endDay();
+			pathDirty = true;
+		}
+
 		if (pathDirty)
 		{
-			int start = sim.agents[selectedAgent].cellId;
-			int goal = sim.spots[targetSpot].cellId;
-			currentPath = sim.map.findPath(start, goal);
+			currentPath = sim.pathTo(selectedAgent, sim.cfg.spots[targetSpot].cellId);
 			pathDirty = false;
 		}
 
-		// 盤面描画
-		for (int id = 0; id < sim.map.width * sim.map.height; ++id)
+		// --- 盤面描画 ---
+		for (int id = 0; id < sim.cfg.width * sim.cfg.height; ++id)
 		{
-			Vec2 c = sim.map.cellCenter(id, hexSize, origin);
-			Polygon hex = sim.map.hexPolygon(c, hexSize - 1.5);
+			Vec2    c = sim.cfg.cellCenter(id, hexSize, origin);
+			Polygon hex = sim.cfg.hexPolygon(c, hexSize - 1.5);
 
-			ColorF fill = ColorF{ 0.85, 0.85, 0.85 };
-
-			if (sim.map.cells[id].terrain == Terrain::Mountain) fill = ColorF{ 0.1, 0.6, 0.2 };
-			if (sim.map.cells[id].terrain == Terrain::Lake)     fill = ColorF{ 0.2, 0.45, 0.8 };
-			if (sim.map.cells[id].terrain == Terrain::Road)     fill = ColorF{ 0.9, 0.8, 0.35 };
-
-			hex.draw(fill);
-
-			if (currentPath.includes(id))
+			ColorF fill{ 0.85,0.85,0.85 };
+			switch (sim.cfg.cells[id].terrain)
 			{
-				hex.draw(ColorF{ 1.0, 0.2, 0.2, 0.35 }); // 薄い赤
+			case Terrain::Mountain: fill = ColorF{ 0.1,0.6,0.2 }; break;
+			case Terrain::Lake:     fill = ColorF{ 0.2,0.45,0.8 }; break;
+			case Terrain::Road:
+				switch (sim.day.roadLevels[id])
+				{
+				case RoadLevel::Clear:   fill = ColorF{ 0.9,0.8,0.35 }; break;
+				case RoadLevel::Crowded: fill = ColorF{ 0.95,0.55,0.1 }; break;
+				case RoadLevel::Jammed:  fill = ColorF{ 0.85,0.15,0.15 }; break;
+				}
+				break;
+			default: break;
 			}
 
+			hex.draw(fill);
+			if (currentPath.includes(id)) hex.draw(ColorF{ 1,0.2,0.2,0.35 });
+			if (id == sim.cfg.spots[targetSpot].cellId) hex.draw(ColorF{ 1,1,0,0.25 });
 			hex.drawFrame(1, Palette::Black);
 			font(id).drawAt(12, c, Palette::Black);
 		}
-		// エージェント描画
-		for (int i = 0; i < static_cast<int>(sim.agents.size()); ++i)
-		{
-			const auto& a = sim.agents[i];
-			Vec2 p = sim.map.cellCenter(a.cellId, hexSize, origin);
 
-			ColorF col = agentColor(a, selectedAgent, i);
+		// スポット描画
+		for (int si = 0; si < (int)sim.cfg.spots.size(); ++si)
+		{
+			const auto& s = sim.cfg.spots[si];
+			Vec2 p = sim.cfg.cellCenter(s.cellId, hexSize, origin);
+			ColorF col = spotColor(s.series);
+			int   stk = sim.day.spotStock[si];
+
+			Array<Vec2> pts = { p + Vec2{0,-11}, p + Vec2{11,0}, p + Vec2{0,11}, p + Vec2{-11,0} };
+			Polygon diamond{ pts };
+			diamond.draw(stk > 0 ? col : ColorF{ col.r, col.g, col.b, 0.3 });
+			diamond.drawFrame(2, Palette::Black);
+			font(stk).drawAt(p + Vec2{ 0,18 }, Palette::White);
+		}
+
+		// エージェント描画
+		for (int i = 0; i < (int)sim.cfg.agentInits.size(); ++i)
+		{
+			Vec2 p = sim.cfg.cellCenter(sim.day.agentStates[i].cellId, hexSize, origin);
+
+			ColorF col;
+			if (sim.cfg.agentInits[i].type == AgentType::Patrol)
+				col = (i == selectedAgent) ? ColorF{ 0.95,0.20,0.20 } : ColorF{ 0.55,0,0 };
+			else
+				col = (i == selectedAgent) ? ColorF{ 0.20,0.55,0.95 } : ColorF{ 0,0.20,0.55 };
+
 			drawCarIcon(p, col);
 		}
 
-		auto spotColor = [](int series)
-			{
-				static const Array<ColorF> colors =
-				{
-					ColorF{ 1.0, 0.3, 0.3 },
-					ColorF{ 0.3, 1.0, 0.3 },
-					ColorF{ 0.3, 0.5, 1.0 },
-					ColorF{ 1.0, 0.8, 0.3 },
-					ColorF{ 0.8, 0.3, 1.0 },
-					ColorF{ 0.3, 1.0, 1.0 }
-				};
-				return colors[series % colors.size()];
-			};
-
-		auto drawSpot = [&](const Spot& s)
-			{
-				Vec2 p = sim.map.cellCenter(s.cellId, hexSize, origin);
-				ColorF col = spotColor(s.series);
-
-				Array<Vec2> pts =
-				{
-					p + Vec2{  0, -11 },
-					p + Vec2{ 11,   0 },
-					p + Vec2{  0,  11 },
-					p + Vec2{ -11,   0 }
-				};
-
-				Polygon diamond{ pts };
-				diamond.draw(col);
-				diamond.drawFrame(2, Palette::Black);
-
-				font(Format(s.stock)).drawAt(p + Vec2{ 0, 18 }, Palette::White);
-			};
-
-		for (const auto& s : sim.spots)
-		{
-			drawSpot(s);
-		}
-
+		// UI
 		drawMoveGuide(uiFont);
-		drawStatusUI(font, selectedAgent);
-		drawAllAgentInfoUI(font, sim);
+		font(U"Tab:switch  1-6:move  Space:auto  Enter:next day").draw(20, 20, Palette::White);
+		font(U"Day {}/{}  Step {}/{}"_fmt(
+			sim.day.day, sim.day.totalDays,
+			sim.day.stepInDay, sim.day.stepsPerDay))
+			.draw(20, 48, Palette::Cyan);
+		font(U"Udon: {}玉"_fmt(sim.totalUdon())).draw(20, 72, Palette::Yellow);
+		font(U"Selected: {}"_fmt(selectedAgent)).draw(20, 96, Palette::White);
+
+		// エージェント情報パネル
+		{
+			const double x = 20, lineH = 24, headH = 28;
+			const double panelH = headH + lineH * sim.cfg.agentInits.size() + 16;
+			const double y = Max(120.0, Scene::Height() - panelH - 20);
+			RectF panel{ x - 6,y - 10,340,panelH };
+			panel.draw(ColorF{ 0.1,0.1,0.12,0.75 });
+			panel.drawFrame(1, Palette::White);
+			font(U"Agents").draw(x, y - 2, Palette::White);
+
+			int pi = 0;
+			for (int i = 0; i < (int)sim.cfg.agentInits.size(); ++i)
+			{
+				const auto& init = sim.cfg.agentInits[i];
+				const auto& as = sim.day.agentStates[i];
+				ColorF      col = (i == selectedAgent) ? Palette::Yellow : Palette::White;
+				double      yy = y + headH + lineH * i;
+
+				if (init.type == AgentType::Patrol)
+				{
+					const auto& pe = sim.day.patrolExtras[pi++];
+					font(U"#{} 巡回 Fuel:{}/{} Udon:{} Cell:{}"_fmt(
+						i, as.fuel, init.fuelMax, pe.udon, as.cellId))
+						.draw(x, yy, col);
+				}
+				else
+				{
+					font(U"#{} 補給 Fuel:∞ Cell:{}"_fmt(i, as.cellId)).draw(x, yy, col);
+				}
+			}
+		}
 	}
 }
